@@ -1,0 +1,5 @@
+# Change these at your peril:
+export PROJECT_NAME=asf_kensa_suitability_prototype
+export REPO_NAME=asf_kensa_suitability_prototype
+export DESCRIPTION=Prototyping a model to identify suitable places for communal ground arrays
+export PROJECT_OPENNESS=public

@@ -56,11 +56,11 @@ uprn = uprn_gdf.compute()
 # %%
 # this doesn't work - it raises an IllegalArgumentException:
 
-# usrn_df = dask_geopandas.read_file(usrn_path, npartitions=4)
-# usrn_df_computed = usrn_df.compute()
+# usrn_gdf = dask_geopandas.read_file(usrn_path, npartitions=4)
+# usrn = usrn_gdf.compute()
 
 # %% [markdown]
-# Restrict the geometries to a bounded area, both to make computation manageable and due to some geometries causing errors (the area corresponds to a section of Norfolk between Great Yarmouth and Lowestoft):
+# Restrict the geometries to a bounded area, both to make computation manageable and due to some geometries causing errors (the area corresponds to a section of the east coast between Great Yarmouth and Lowestoft):
 
 # %%
 frame = (628160, 290000, 660000, 310000)
@@ -79,7 +79,7 @@ usrn = usrn.drop_duplicates("geometry")
 f, ax = plt.subplots(figsize=(15, 15))
 usrn.plot(ax=ax, alpha=0.5)
 cx.add_basemap(ax, crs="EPSG:27700", source=cx.providers.OpenStreetMap.Mapnik)
-ax.set_title("Streets in USRN dataset (blue)")
+ax.set_title("Streets in filtered USRN dataset (blue)")
 
 
 # %%
@@ -92,7 +92,9 @@ uprn.plot(ax=ax, markersize=2, color="orange", alpha=0.5)
 cx.add_basemap(
     ax, crs="EPSG:27700", source=cx.providers.OpenStreetMap.Mapnik, alpha=0.5
 )
-ax.set_title("Locations in UPRN dataset (orange) and streets in USRN dataset (blue)")
+ax.set_title(
+    "Locations in filtered UPRN dataset (orange) and streets in filtered USRN dataset (blue)"
+)
 
 
 # %% [markdown]
@@ -119,11 +121,7 @@ joined = gpd.GeoDataFrame(joined)
 # %%
 counts = joined.groupby("usrn")["UPRN"].count().sort_values(ascending=False)
 top_5_streets = list(counts.head().index)
-
-# %%
-usrn_not_top = usrn.loc[~usrn["usrn"].isin(top_5_streets)]
 usrn_top = usrn.loc[usrn["usrn"].isin(top_5_streets)]
-
 
 # %%
 f, ax = plt.subplots(figsize=(15, 15))
@@ -147,8 +145,8 @@ ax.set_title("Top 5 streets with highest numbers of nearby UPRNs")
 joined["length"] = joined["geometry_line"].length
 
 # %%
-joined["UPRN_count"] = joined.groupby("usrn")["UPRN"].transform("count")
-joined["UPRN_density"] = joined["UPRN_count"] / joined["length"]
+joined["uprn_count"] = joined.groupby("usrn")["UPRN"].transform("count")
+joined["uprn_density"] = joined["uprn_count"] / joined["length"]
 
 # %%
 # note: some streets with zero length, filter to avoid trivial cases
@@ -158,7 +156,7 @@ joined = joined.loc[joined["length"] > 0]
 top_5_density_streets = list(
     joined.groupby("usrn")
     .head(1)
-    .sort_values("UPRN_density", ascending=False)
+    .sort_values("uprn_density", ascending=False)
     .head()["usrn"]
 )
 

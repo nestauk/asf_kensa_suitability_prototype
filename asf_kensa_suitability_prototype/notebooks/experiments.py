@@ -252,6 +252,7 @@ ax.set_title("Street segments with 'sufficiently high' UPRN density")
 
 # %%
 # explode multi line strings into individual line strings (connected components)
+# to check: are line strings actually connected components? is there a better way to do this?
 exploded = intersections.set_geometry("geometry").explode(ignore_index=True)
 
 # %%
@@ -260,7 +261,7 @@ exploded = exploded.set_crs("EPSG:27700")
 
 # %%
 # join UPRN closest points onto their nearest line string
-# probably a more efficient way to do this given that the line strings are based on the UPRNs
+# there is probably a more efficient way to do this given that the line strings are based on the UPRNs
 segment_counts = (
     joined[["nearest_point", "distance"]]
     .set_geometry("nearest_point")
@@ -268,6 +269,7 @@ segment_counts = (
 )
 
 # %%
+# define new variables
 exploded["uprn_count"] = segment_counts.groupby("index_right")["nearest_point"].count()
 exploded["total_distance"] = segment_counts.groupby("index_right")["distance"].sum()
 
@@ -308,7 +310,7 @@ ax.set_title(
 )
 
 # %% [markdown]
-# Still a few issues to resolve - lots of the high-density segments are really small, does this indicate problems with the underlying geometry? Possibly small segments that are detached from the rest? Disconnected line strings? Or points where streets change direction near a cluster of UPRNs, so they all get joined to a corner?
+# Still a few issues to resolve - lots of the high-density segments are really small when looking at the full dataset, does this indicate problems with the underlying geometry? Possibly small segments that are detached from the rest? Disconnected line strings? Or points where streets change direction near a cluster of UPRNs, so they all get joined to a corner?
 
 # %%
 # some streets are weird shapes - loops, forks, etc...
@@ -321,4 +323,4 @@ ax.set_title(
 # average distance becomes messed up if there is a faraway home that is joined to it - realistically it wouldn't be connected
 # better to filter by minimum distance to a street at the start
 
-# consider linearity
+# consider linearity of streets - how does this affect Kensa?

@@ -295,6 +295,7 @@ ax.set_title(
 # %%
 fig, ax = plt.subplots(figsize=(15, 15))
 
+# arbitrary parameters for now
 exploded.loc[
     (exploded["length"] > 100)
     & (exploded["density"] > 0.2)
@@ -310,15 +311,33 @@ ax.set_title(
 # %% [markdown]
 # Still a few issues to resolve - lots of the high-density segments are really small when looking at the full dataset, does this indicate problems with the underlying geometry? Possibly small segments that are detached from the rest? Disconnected line strings? Or points where streets change direction near a cluster of UPRNs, so they all get joined to a corner?
 
-# %%
-# some streets are weird shapes - loops, forks, etc...
+# %% [markdown]
+# ## Key things to resolve
 
-# apply filtering: not main roads, but sufficiently wide, no overhead power lines, etc
+# %% [markdown]
+# * Some streets are weird shapes - loops, forks, etc. This causes problems with the "buffer circle" approximation - would be better to "crawl" outward from the snapped point to find all points on the street that are within a certain distance along the street (not as the crow flies)
+#
+# * Generally check street geometries to make sure line segments are connected properly
+#
+# * Need to check that deduplicating streets by geometry is robust - why are streets duplicated in the first place?
+#
+# * Filter to domestic UPRNs of suitable built form (not flats)
+#
+# * Apply filtering to streets: not main roads, but sufficiently wide, no overhead power lines, etc
+#
+# * Some street geometries have a z-coordinate - need to investigate why / whether it's important
+#
+# * Average distance to UPRN becomes messed up if there is a faraway home that is joined to the street - realistically it wouldn't be connected. Better to filter UPRNs by minimum distance to a street at the start
+#
+# * Consider linearity of streets - how does this affect Kensa?
+#
+# * Are streets the right unit? If two streets are connected to form a straight line, should they be considered as one?
+#
+# * Fix issue with IllegalArgumentException breaking full USRN dataset import
+#
+# * Scaling the method to all of the UK
+#
+# * Identifying suitable parameters for suitable length, density, average distance to UPRN - and radius of buffer circles
 
-# some streets have a z-coordinate as the original dataset has them - need to investigate
-# joined["nearest_point"].has_z.sum()
-
-# average distance becomes messed up if there is a faraway home that is joined to it - realistically it wouldn't be connected
-# better to filter by minimum distance to a street at the start
-
-# consider linearity of streets - how does this affect Kensa?
+# %% [markdown]
+#

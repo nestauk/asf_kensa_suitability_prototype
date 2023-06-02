@@ -83,6 +83,7 @@ ax.set_title("Streets in filtered USRN dataset (blue)")
 
 
 # %%
+# do the same to UPRNs
 uprn = gpd.clip(uprn, mask=frame)
 
 # %%
@@ -135,7 +136,7 @@ ax.set_title("Top 5 streets with highest numbers of nearby UPRNs")
 # %% [markdown]
 # Note: some of these streets are high-ranking because they are long. Need to account for density of UPRNs.
 #
-# Note also that some streets are a weird shape! The cluster of roads in the bottom left seems to correspond to one USRN.
+# Note also that some streets are a weird shape! The cluster of roads in the bottom left seems to correspond to one USRN (83407249), and some are not connected.
 
 # %% [markdown]
 # ### Ranking streets by density of UPRNs (number per unit length)
@@ -147,10 +148,6 @@ joined["length"] = joined["geometry_line"].length
 # %%
 joined["uprn_count"] = joined.groupby("usrn")["UPRN"].transform("count")
 joined["uprn_density"] = joined["uprn_count"] / joined["length"]
-
-# %%
-# note: some streets with zero length, filter to avoid trivial cases
-joined = joined.loc[joined["length"] > 0]
 
 # %%
 top_5_density_streets = list(
@@ -209,10 +206,10 @@ ax.set_title("Streets (blue), UPRNs (orange) and UPRNs snapped to streets (red)"
 # One potential method would involve applying kernel density estimation on the snapped UPRNs to get a continuous density measure on the street network. We could then identify high-density areas by filtering to street segments that have density greater than a particular threshold.
 #
 # An approximation to this is as follows:
-# * For each snapped UPRN, get the segment of the street that is less than a given distance from the point
-# * For each street, get the union of these segments
+# * For each snapped UPRN, identify the part of the street that is less than a given distance from the snapped UPRN
+# * For each street, get the union of these parts
 # * Find the connected components of this union
-# * Calculate the total lengths of these components and the average distance between the component and the UPRNs that are nearest to it
+# * Calculate the total length of each component and calculate the average distance between each component and the UPRNs that are nearest to it
 # * 'Suitable' street segments are therefore components that are sufficiently long and have a sufficiently small average distance-to-UPRN
 #
 # This is a bit like applying KDE with a uniform kernel. If we used KDE then overlapping kernels would be additive and we would get a better picture of how dense street segments are. But we don't really need this if we have a 'minimum allowable' density in mind - we just need to set the 'given distance' according to this value, then the street segments that result from this process will be 'sufficiently dense'.
@@ -325,19 +322,21 @@ ax.set_title(
 #
 # * Apply filtering to streets: not main roads, but sufficiently wide, no overhead power lines, etc
 #
-# * Some street geometries have a z-coordinate - need to investigate why / whether it's important
+# * Some street geometries have a z-coordinate - need to investigate why / whether it's important (and whether it is breaking anything)
 #
 # * Average distance to UPRN becomes messed up if there is a faraway home that is joined to the street - realistically it wouldn't be connected. Better to filter UPRNs by minimum distance to a street at the start
 #
 # * Consider linearity of streets - how does this affect Kensa?
 #
-# * Are streets the right unit? If two streets are connected to form a straight line, should they be considered as one?
+# * Are streets the right unit? If two streets are connected to form a straight line, should they be considered as one? Note that in the above method street segments are only subsets of one street
 #
 # * Fix issue with IllegalArgumentException breaking full USRN dataset import
 #
 # * Scaling the method to all of the UK
 #
-# * Identifying suitable parameters for suitable length, density, average distance to UPRN - and radius of buffer circles
+# * Identifying suitable parameters for suitable length, density, average distance to UPRN - and radius of buffer circles (can we work with Kensa to find an approximate cost function?)
+#
+# * Used `explode` above to break MultiLineStrings into individual LineStrings assuming these are connected components - but not sure this is true (e.g. for cycles)
 
 # %% [markdown]
 #

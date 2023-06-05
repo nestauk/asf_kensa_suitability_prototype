@@ -1,20 +1,3 @@
-# ---
-# jupyter:
-#   jupytext:
-#     cell_metadata_filter: -all
-#     comment_magics: true
-#     custom_cell_magics: kql
-#     text_representation:
-#       extension: .py
-#       format_name: percent
-#       format_version: '1.3'
-#       jupytext_version: 1.11.2
-#   kernelspec:
-#     display_name: asf_kensa_suitability_prototype
-#     language: python
-#     name: asf_kensa_suitability_prototype
-# ---
-
 # %% [markdown]
 # ### Imports and setup
 
@@ -81,7 +64,6 @@ usrn.plot(ax=ax, alpha=0.5)
 cx.add_basemap(ax, crs="EPSG:27700", source=cx.providers.OpenStreetMap.Mapnik)
 ax.set_title("Streets in filtered USRN dataset (blue)")
 
-
 # %%
 # do the same to UPRNs
 uprn = gpd.clip(uprn, mask=frame)
@@ -96,7 +78,6 @@ cx.add_basemap(
 ax.set_title(
     "Locations in filtered UPRN dataset (orange) and streets in filtered USRN dataset (blue)"
 )
-
 
 # %% [markdown]
 # ### Joining each UPRN to its nearest street
@@ -131,7 +112,6 @@ cx.add_basemap(
     ax, crs="EPSG:27700", source=cx.providers.OpenStreetMap.Mapnik, alpha=0.5
 )
 ax.set_title("Top 5 streets with highest numbers of nearby UPRNs")
-
 
 # %% [markdown]
 # Note: some of these streets are high-ranking because they are long. Need to account for density of UPRNs.
@@ -197,7 +177,7 @@ cx.add_basemap(
 ax.set_title("Streets (blue), UPRNs (orange) and UPRNs snapped to streets (red)")
 
 # %% [markdown]
-# Note in the map above that there are some areas with a large number of UPRNs without any streets nearby. Potential risk here that streets surrounding these areas "absorb" lots of UPRNs that they are not actually close to (i.e. too far for Kensa to connect from from their nearest street). We can filter by distance to nearest street to avoid this problem. Also we need to remember to filter UPRNs to just domestic properties, and only those that are suitable (i.e. not blocks of flats).
+# Note in the map above that there are some areas with a large number of UPRNs without any streets nearby. Potential risk here that streets surrounding these areas "absorb" lots of UPRNs that they are not actually close to (i.e. too far for Kensa to connect from their nearest street). We can filter by distance to nearest street to avoid this problem. Also we need to remember to filter UPRNs to just domestic properties, and only those that are suitable (i.e. not blocks of flats).
 
 # %% [markdown]
 # ### Identifying dense street segments
@@ -206,17 +186,17 @@ ax.set_title("Streets (blue), UPRNs (orange) and UPRNs snapped to streets (red)"
 # One potential method would involve applying kernel density estimation on the snapped UPRNs to get a continuous density measure on the street network. We could then identify high-density areas by filtering to street segments that have density greater than a particular threshold.
 #
 # An approximation to this is as follows:
-# * For each snapped UPRN, identify the part of the street that is less than a given distance from the snapped UPRN
+# * For each snapped UPRN, identify the part of the street that is less than a given distance *d* from the snapped UPRN
 # * For each street, get the union of these parts
 # * Find the connected components of this union
 # * Calculate the total length of each component and calculate the average distance between each component and the UPRNs that are nearest to it
 # * 'Suitable' street segments are therefore components that are sufficiently long and have a sufficiently small average distance-to-UPRN
 #
-# This is a bit like applying KDE with a uniform kernel. If we used KDE then overlapping kernels would be additive and we would get a better picture of how dense street segments are. But we don't really need this if we have a 'minimum allowable' density in mind - we just need to set the 'given distance' according to this value, then the street segments that result from this process will be 'sufficiently dense'.
+# This is a bit like applying KDE with a uniform kernel. If we used KDE then overlapping kernels would be additive and we would get a better picture of how dense street segments are. But we don't really need this if we have a 'minimum allowable' density in mind - we just need to set *d* according to this value, then the street segments that result from this process will be 'sufficiently dense'.
 #
 # The limitation is that we need to know this value in advance, whereas if we used KDE with a non-uniform kernel then we'd get a more general output that could be filtered according to different density values. It's also more strict than KDE - in this method, if two snapped UPRNs are more than twice the 'given distance' apart with nothing in between, then the resulting street segments will be disconnected, but if we used KDE then we could choose a kernel that provides more flexibility, potentially leading to segments being joined if there are enough points on either side.
 #
-# We can further simplify the first step by just intersecting the street with a buffer circle around the snapped point. Under the assumption that streets are fairly linear then this will roughly correspond to the points on the street that are closer to the point than the radius of the circle. This assumption should be checked though given that we know from the above that some streets are non-linear.
+# We can further simplify the first step by just intersecting the street with a buffer circle of radius *d* around the snapped point. This is roughly the same thing, under the assumption that streets are approximately linear. This assumption should be checked though given that we know from the above that some streets are non-linear.
 
 # %%
 # for each point, add a buffer circle (arbitrary radius of 50 for this demo)

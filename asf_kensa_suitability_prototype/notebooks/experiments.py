@@ -1,3 +1,20 @@
+# ---
+# jupyter:
+#   jupytext:
+#     cell_metadata_filter: -all
+#     comment_magics: true
+#     custom_cell_magics: kql
+#     text_representation:
+#       extension: .py
+#       format_name: percent
+#       format_version: '1.3'
+#       jupytext_version: 1.14.6
+#   kernelspec:
+#     display_name: asf_kensa_suitability_prototype
+#     language: python
+#     name: asf_kensa_suitability_prototype
+# ---
+
 # %% [markdown]
 # ### Imports and setup
 
@@ -10,6 +27,7 @@ os.chdir("../..")
 from dask import dataframe as dd
 import dask_geopandas
 import geopandas as gpd
+from pyogrio import read_dataframe
 import matplotlib.pyplot as plt
 from shapely.geometry import box
 from shapely.ops import nearest_points
@@ -18,29 +36,198 @@ import contextily as cx
 
 # %%
 uprn_path = "inputs/data/uprn/osopenuprn_202304.csv"
-usrn_path = "inputs/data/usrn/osopenusrn_202305.gpkg"
+# Using an fsspec file uri allows you to keep the data zipped.
+# uprn_path = "zip://osopenuprn_202304.csv::inputs/data/uprn/osopenuprn_202305_csv.zip"
+
+# Using an fsspec
+# lids_path = "zip://BLPU_UPRN_Street_USRN_11.csv::inputs/data/lids/lids-2023-05_csv_BLPU-UPRN-Street-USRN-11.zip"
+lids_path = "inputs/data/lids/BLPU_UPRN_Street_USRN_11.csv"
+
+# usrn_path = "inputs/data/usrn/osopenusrn_202305.gpkg"
+# GDAL virtual filesystem for reading from zipped geopackage file.
+usrn_path = "/vsizip/inputs/data/usrn/osopenusrn_202306_gpkg.zip/osopenusrn_202306.gpkg"
 
 # %% [markdown]
 # Import UPRNs:
 
 # %%
+# Load uprns from zip file
 uprn_df = dd.read_csv(uprn_path)
-uprn_df["geometry"] = dask_geopandas.points_from_xy(
-    uprn_df, "X_COORDINATE", "Y_COORDINATE"
-)
-uprn_gdf = dask_geopandas.from_dask_dataframe(uprn_df, geometry="geometry")
 
 # %%
-uprn = uprn_gdf.compute()
+# Convert dask dataframe to geodataframe - defaults to 31 partitions from uprn_df.
+uprn_gdf = dask_geopandas.from_dask_dataframe(
+    uprn_df,
+    geometry=dask_geopandas.points_from_xy(uprn_df, "X_COORDINATE", "Y_COORDINATE"),
+)
+
+# %%
+uprn_gdf.head()
+
+# %% [markdown]
+# Import linked identifiers:
+
+# %%
+# Load lids
+lids_df = dd.read_csv(lids_path)
+
+# %%
+# Identifier 1 is uprn, identifier 2 is usrn.
+lids_df.head()
+
+# %% [markdown]
+# Join linked identifiers to UPRN data and explore missing.
+
+# %%
+uprn_df_check = uprn_df.merge(
+    lids_df[["IDENTIFIER_1", "IDENTIFIER_2"]],
+    how="left",
+    left_on="UPRN",
+    right_on="IDENTIFIER_1",
+)
+
+# %%
+# The fact that IDENTIFIER_2 gets flipped to a float suggests that we're introducing some missing data.
+uprn_df_check.head()
+
+# %%
+# Get count of na values - 127,600
+uprn_df_check["IDENTIFIER_2"].isna().sum().compute()
+
+# %%
+# 127,600/ 41,123,153 = 0.31% missing
+uprn_df_check["IDENTIFIER_2"].__len__()
+
+# %%
+missing = uprn_df_check.loc[lambda df: df["IDENTIFIER_2"].isna()].compute()
+
+# Missing ids appear to be widely distributed, so I'll ignore them for now.
+f, ax = plt.subplots(figsize=(5, 7))
+missing.plot(x="X_COORDINATE", y="Y_COORDINATE", kind="scatter", marker=".", s=2, ax=ax)
+ax.set_aspect("equal")
+
+# %% [markdown]
+# Join linked identifiers to UPRNs and group to summarise counts of UPRN per USRN.
+
+# %%
+# rejoin using inner to drop unmatched uprns
+uprn_df = uprn_df.merge(
+    lids_df[["IDENTIFIER_1", "IDENTIFIER_2"]],
+    how="inner",
+    left_on="UPRN",
+    right_on="IDENTIFIER_1",
+)
+
+# %%
+# Get count of UPRNs by USRNs
+uprn_count = (
+    uprn_df.groupby("IDENTIFIER_2")["IDENTIFIER_1"]
+    .count()
+    .compute()
+    .reset_index(name="count")
+)
+
+# %%
+# on average streets have 30 uprns associated, but median is 13 indicating skew. Max is high.
+uprn_count["count"].describe()
 
 # %% [markdown]
 # Import USRNs:
 
 # %%
-# this doesn't work - it raises an IllegalArgumentException:
+# We'll drop 32 bad usrn's for now, however these could be fixed.
+# 32 of 1,712,890 usrns is 0.002%
+import fiona
+from shapely.geometry import shape
 
-# usrn_gdf = dask_geopandas.read_file(usrn_path, npartitions=4)
-# usrn = usrn_gdf.compute()
+# Find bad geoms
+bad_usrns = []
+with fiona.open(usrn_path) as src:
+    for feat in src:
+        try:
+            shape(feat.geometry)
+        except:
+            bad_usrns.append(feat.properties["usrn"])
+
+print(len(bad_usrns))
+
+# %%
+# They appear to be multilinestrings that have component lines with bad segments (e.g. a line made of 1 point).
+# These could be fixed by dropping the bad segments and passing the rest to MultiLineString.
+from shapely.geometry import LineString
+
+with fiona.open(usrn_path) as src:
+    for feat in src:
+        if feat.properties["usrn"] in bad_usrns:
+            count_bad_segments = 0
+            for idx, line in enumerate(feat.geometry.coordinates):
+                try:
+                    LineString(line)
+                except:
+                    count_bad_segments += 1
+            print(
+                f"usrn : {feat.properties['usrn']} of type {feat.geometry.type} has \
+{len(feat.geometry.coordinates)} segments of which {count_bad_segments} is/are malformed."
+            )
+
+# %%
+# Read usrn data without problematic line features, using pyogrio.
+usrn_gdf = read_dataframe(
+    usrn_path, where=f"usrn not in ({','.join(map(str, bad_usrns))})"
+)
+
+# %%
+# convert to dask geopandas geodataframe (nb 'where' not currently implemented in dask geopandas)
+usrn_gdf = dask_geopandas.from_geopandas(usrn_gdf, npartitions=10)
+
+# %%
+usrn_gdf.head()
+
+# %%
+# merge uprn_count with usrn_gdf:
+usrn_gdf_check = usrn_gdf.merge(
+    uprn_count, how="outer", left_on="usrn", right_on="IDENTIFIER_2"
+)
+
+# %%
+usrn_gdf_check.head()
+
+# %%
+# 670 Missing usrns of 1712890 - 0.04%
+usrn_gdf_check.usrn.isna().sum().compute()
+
+# %%
+# missing data count of uprns sums to 9,411 of 40,995,553 - 0.02%
+usrn_gdf_check.loc[lambda df: df.usrn.isna(), "count"].sum().compute()
+
+# %%
+# no matching uprns for 337,624 usrns
+usrn_gdf_check.IDENTIFIER_2.isna().sum().compute()
+
+# %%
+# Rejoin the data retaining only matching rows.
+usrn_gdf = usrn_gdf.merge(
+    uprn_count, how="inner", left_on="usrn", right_on="IDENTIFIER_2"
+)
+
+# %%
+# 1,375,234 usrns with joined uprn data - but might want to check/deal with duplicates.
+usrn_gdf.__len__()
+
+# %% [markdown]
+# This is now an authoritative uprn - usrn joined dataset based on the the published linked identifiers data. It is a good starting point for simple analysis.
+#
+# However, as it cannot capture where a uprn is along a usrn segment it is only really useful at the usrn resolution.
+#
+# It's be good to look at some basic summaries of this data - e.g. uprns per length of usrn.
+#
+# Also, aggregating the data - perhaps to OA or LSOA would be interesting.
+#
+# As would creating a line density surface. You could do this using `rasterio` and iterating over each line feature, rasterising, adjusting the burnt in values according to the count/density of the uprns on the line and the number of cells covered, and then summing all the surfaces (in practice this would be more like a reduce operation). Then you could look at the raw surface, or smooth/convolve.
+
+# %%
+
+# %%
 
 # %% [markdown]
 # Restrict the geometries to a bounded area, both to make computation manageable and due to some geometries causing errors (the area corresponds to a section of the east coast between Great Yarmouth and Lowestoft):
@@ -66,7 +253,7 @@ ax.set_title("Streets in filtered USRN dataset (blue)")
 
 # %%
 # do the same to UPRNs
-uprn = gpd.clip(uprn, mask=frame)
+uprn = dask_geopandas.clip(uprn_gdf, mask=frame).compute()
 
 # %%
 f, ax = plt.subplots(figsize=(15, 15))

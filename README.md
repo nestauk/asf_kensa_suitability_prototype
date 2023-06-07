@@ -11,7 +11,9 @@ All work is currently in one notebook: `asf_kensa_suitability_prototype/notebook
   - Setup the conda environment
   - Configure `pre-commit`
 
-- Download data from S3 and unzip (or download raw [UPRN](https://beta.ordnancesurvey.co.uk/products/os-open-uprn) and [USRN](https://beta.ordnancesurvey.co.uk/products/os-open-usrn) data from OS). Add it to `/inputs` according to the following structure:
+- Download data from S3 and unzip (or download raw [UPRN](https://beta.ordnancesurvey.co.uk/products/os-open-uprn) and [USRN](https://beta.ordnancesurvey.co.uk/products/os-open-usrn) data from OS).
+- Additionally download relevant [linked identifier data](https://beta.ordnancesurvey.co.uk/products/os-open-linked-identifiers) choosing the 'BLPU UPRN Street USRN 11' option from the OS Open Data Hub.
+- Add it to `/inputs` according to the following structure:
 
 ```
 inputs/
@@ -20,6 +22,8 @@ inputs/
 │     ├─ osopenuprn_202304.csv
 │  ├─ usrn/
 │     ├─ osopenuprn_202305.gpkg
+│  ├─ lids/
+│     ├─ BLPU_UPRN_Street_USRN_11.csv
 ```
 
 - Install required packages: `pip install -r requirements.txt`

@@ -33,6 +33,8 @@ from shapely.geometry import box
 from shapely.ops import nearest_points
 from shapely import unary_union, line_merge
 import contextily as cx
+from rasterio.features import rasterize
+import numpy as np
 
 # %%
 uprn_path = "inputs/data/uprn/osopenuprn_202304.csv"
@@ -46,6 +48,9 @@ lids_path = "inputs/data/lids/BLPU_UPRN_Street_USRN_11.csv"
 # usrn_path = "inputs/data/usrn/osopenusrn_202305.gpkg"
 # GDAL virtual filesystem for reading from zipped geopackage file.
 usrn_path = "/vsizip/inputs/data/usrn/osopenusrn_202306_gpkg.zip/osopenusrn_202306.gpkg"
+
+# lsoa polygons from https://geoportal.statistics.gov.uk/maps/766da1380a3544c5a7ca9131dfd4acb6
+lsoa_path = "inputs/data/lsoa/LSOA_Dec_2021_Boundaries_Generalised_Clipped_EW_BGC_2022_3280346050083114707.gpkg"
 
 # %% [markdown]
 # Import UPRNs:
@@ -226,8 +231,121 @@ usrn_gdf.__len__()
 # As would creating a line density surface. You could do this using `rasterio` and iterating over each line feature, rasterising, adjusting the burnt in values according to the count/density of the uprns on the line and the number of cells covered, and then summing all the surfaces (in practice this would be more like a reduce operation). Then you could look at the raw surface, or smooth/convolve.
 
 # %%
+# note that we still have duplicate geometries
+usrn_gdf.drop_duplicates("geometry").__len__()
+
+# relevant info from uprn.uk:
+#
+# Note: a USRN is an operational identifier and is unique to a highway authority.
+# Where a road crosses a highway authority boundary, therefore, it will have different USRNs
+# in different authorities, even if it has the same name and number.
+#
+# Roads operated by national highway authorities (eg, Highways England) will also have
+# separate USRNs for the road as a whole and for each subsection within each local highway
+# authority that it crosses.
+
+# %% [markdown]
+# ### USRN "density"
 
 # %%
+# add column indicating density of UPRNs on USRNs
+usrn_gdf["density"] = usrn_gdf["count"] / usrn_gdf["geometry"].length
+
+# %%
+usrn_gdf["density"].describe().compute()
+
+# %% [markdown]
+# ### Summaries by LSOA
+
+# %%
+# read LSOA data
+lsoa = read_dataframe(lsoa_path)
+
+# %%
+lsoa_gdf = dask_geopandas.from_geopandas(lsoa, npartitions=10)
+
+# %%
+# overlay usrn_gdf with lsoa_gdf so that each row of clipped_gdf
+# corresponds to a segment of a USRN contained within an LSOA
+lsoa_gdf["lsoa_geometry"] = lsoa_gdf.geometry
+overlaid_gdf = usrn_gdf.compute().overlay(lsoa_gdf.compute(), how="intersection")
+
+# %%
+overlaid_gdf = dask_geopandas.from_geopandas(overlaid_gdf, npartitions=10)
+
+# %%
+# for each LSOA, calculate average street density by dividing total clipped USRN "weight" (density * clipped length)
+# by total length of clipped USRNs
+overlaid_gdf["clipped_usrn_length"] = overlaid_gdf["geometry"].length
+overlaid_gdf["clipped_usrn_weight"] = (
+    overlaid_gdf["clipped_usrn_length"] * overlaid_gdf["density"]
+)
+
+# %%
+lsoa_summaries = overlaid_gdf.groupby("LSOA21NM")[
+    ["clipped_usrn_length", "clipped_usrn_weight"]
+].agg("sum")
+lsoa_summaries["average_street_density"] = (
+    lsoa_summaries["clipped_usrn_weight"] / lsoa_summaries["clipped_usrn_length"]
+)
+
+# %%
+lsoa_summaries.sort_values("average_street_density").compute()
+
+# %% [markdown]
+# ### Rasterisation
+
+# %%
+from affine import Affine
+
+# Declare processing extent (bounds in British National Grid)
+xmin = 5000
+xmax = 666000
+ymin = 6000
+ymax = 1221000
+
+# Affine transformation for surface in British national grid, with 500m cell size.
+cell_size = 500
+transform = Affine(cell_size, 0, xmin, 0, -cell_size, ymax)
+
+out_shape = (int((ymax - ymin) / cell_size), int((xmax - xmin) / cell_size))
+
+shapes = [(geom, dens) for geom, dens in zip(usrn_gdf["geometry"], usrn_gdf["density"])]
+
+# %%
+raster = rasterize(shapes=shapes, out_shape=out_shape, transform=transform)
+
+# %%
+# plot with 1 pixel = 1 cell on 96 dpi screen
+dpi = (96, 96)
+figsize = (raster.shape[0] / dpi[0], raster.shape[1] / dpi[1])
+
+# %%
+# plot nonzero cells
+plt.figure(figsize=figsize)
+plt.imshow((raster != 0), interpolation="none")
+
+# %%
+# cell density values are long-tailed
+print((raster > 0.5).sum())
+print((raster > 1).sum())
+print((raster > 2).sum())
+print((raster > 4).sum())
+print((raster > 8).sum())
+
+# %%
+# scale by taking log of (raster + 1)
+# not the easiest to see
+plt.figure(figsize=figsize)
+plt.imshow(np.log(raster + 1), interpolation="none")
+
+# %%
+# better: clip to [0, 1]
+plt.figure(figsize=figsize)
+plt.imshow(np.clip(raster, 0, 1), interpolation="none")
+
+# %% [markdown]
+# ## Point-snapping approach
 
 # %% [markdown]
 # Restrict the geometries to a bounded area, both to make computation manageable and due to some geometries causing errors (the area corresponds to a section of the east coast between Great Yarmouth and Lowestoft):
@@ -506,4 +624,119 @@ ax.set_title(
 # * Used `explode` above to break MultiLineStrings into individual LineStrings assuming these are connected components - but not sure this is true (e.g. for cycles)
 
 # %% [markdown]
-#
+# ### Point-snapping approach applied to all GB
+
+# %%
+# copied from above
+
+# import fiona
+# from shapely.geometry import shape
+# # Find bad geoms
+# bad_usrns = []
+# with fiona.open(usrn_path) as src:
+#     for feat in src:
+#         try:
+#             shape(feat.geometry)
+#         except:
+#             bad_usrns.append(feat.properties['usrn'])
+
+# %%
+usrn_gdf = read_dataframe(
+    usrn_path, where=f"usrn not in ({','.join(map(str, bad_usrns))})"
+)
+
+usrn_gdf = dask_geopandas.from_geopandas(usrn_gdf, npartitions=10)
+
+# %%
+uprn_gdf = dask_geopandas.from_dask_dataframe(
+    uprn_df,
+    geometry=dask_geopandas.points_from_xy(uprn_df, "X_COORDINATE", "Y_COORDINATE"),
+)
+
+# %% [markdown]
+# `sjoin_nearest` isn't implemented in dask_geopandas and takes ages. Instead we could use the linked UPRN-USRN dataset to get nearest points on the USRN that each UPRN is linked to. In fact this may be more accurate than the original method - the closest USRN to each UPRN isn't necessarily the most sensible one to connect to, whereas the linked USRN may be more reliable and unlikely to be too far away.
+
+# %%
+joined = uprn_gdf.merge(
+    usrn_gdf,
+    how="inner",
+    left_on="IDENTIFIER_2",
+    right_on="usrn",
+    suffixes=["_uprn", "_usrn"],
+)
+
+# %%
+# tidy up
+joined = joined.drop(
+    columns=["X_COORDINATE", "Y_COORDINATE", "IDENTIFIER_1", "IDENTIFIER_2"]
+)
+
+# %%
+joined = joined.set_geometry("geometry_usrn")
+joined["length"] = joined["geometry_usrn"].length
+
+# %%
+joined["uprn_count"] = joined.groupby("usrn")["UPRN"].transform("count")
+joined["uprn_density"] = joined["uprn_count"] / joined["length"]
+
+# %%
+joined["nearest_point"] = joined.apply(
+    lambda x: nearest_points(x["geometry_uprn"], x["geometry_usrn"])[1], axis=1
+)
+
+# %%
+joined["buffer"] = joined.set_geometry("nearest_point").buffer(50)
+joined["segment"] = joined["buffer"].intersection(joined["geometry_usrn"])
+
+# %%
+intersections = joined.groupby("usrn").apply(
+    lambda x: line_merge(unary_union(x["segment"]))
+)
+
+intersections = intersections.reset_index().rename(columns={0: "geometry"})
+
+# %%
+exploded = intersections.set_geometry("geometry").explode()
+
+exploded = exploded.set_crs("EPSG:27700")
+
+# %%
+# exploded.head()
+
+# %% [markdown]
+# Unfortunately this takes a long time as well. There is also another `sjoin_nearest` in the step where we link UPRNs to their nearest USRN segments, which is also likely to be slow. Potentially the rasterisation approach could be used to narrow down areas, then this method could be used to get a more detailed picture of a particular area.
+
+# %%
+# segment_counts = (
+#     joined[["nearest_point", "distance"]]
+#     .set_geometry("nearest_point")
+#     .sjoin_nearest(exploded)
+# )
+
+# exploded["uprn_count"] = segment_counts.groupby("index_right")["nearest_point"].count()
+# exploded["total_distance"] = segment_counts.groupby("index_right")["distance"].sum()
+
+# exploded["uprn_count"] = exploded["uprn_count"].fillna(0).astype(int)
+# exploded["total_distance"] = exploded["total_distance"].fillna(0)
+
+# exploded["average_distance"] = exploded["total_distance"] / exploded["uprn_count"]
+
+# exploded["length"] = exploded["geometry"].length
+# exploded["density"] = exploded["uprn_count"] / exploded["length"]
+
+# fig, ax = plt.subplots(figsize=(15, 15))
+
+# # arbitrary parameters for now
+# exploded.loc[
+#     (exploded["length"] > 100)
+#     & (exploded["density"] > 0.2)
+#     & (exploded["average_distance"] < 50)
+# ].plot(ax=ax, color="red")
+# cx.add_basemap(
+#     ax, crs="EPSG:27700", source=cx.providers.OpenStreetMap.Mapnik, alpha=0.5
+# )
+# ax.set_title(
+#     "Street segments with 'sufficient' length, UPRN density and average distance to UPRN"
+# )
+
+# %%

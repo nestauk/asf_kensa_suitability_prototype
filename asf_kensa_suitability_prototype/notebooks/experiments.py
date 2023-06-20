@@ -1,20 +1,3 @@
-# ---
-# jupyter:
-#   jupytext:
-#     cell_metadata_filter: -all
-#     comment_magics: true
-#     custom_cell_magics: kql
-#     text_representation:
-#       extension: .py
-#       format_name: percent
-#       format_version: '1.3'
-#       jupytext_version: 1.14.6
-#   kernelspec:
-#     display_name: asf_kensa_suitability_prototype
-#     language: python
-#     name: asf_kensa_suitability_prototype
-# ---
-
 # %% [markdown]
 # ### Imports and setup
 
@@ -293,6 +276,9 @@ lsoa_summaries["average_street_density"] = (
 lsoa_summaries.sort_values("average_street_density").compute()
 
 # %% [markdown]
+# The LSOA with lowest density is Cardiff 048F (W01001947) which is an industrial section of Cardiff Bay; other LSOAs in the top 5 are large and rural. The LSOA with highest density is Salford 036B (E01033994) which contains a large block of flats. (Interactive map of LSOAs [here](https://geoportal.statistics.gov.uk/datasets/766da1380a3544c5a7ca9131dfd4acb6))
+
+# %% [markdown]
 # ### Rasterisation
 
 # %%
@@ -344,15 +330,61 @@ plt.imshow(np.log(raster + 1), interpolation="none")
 plt.figure(figsize=figsize)
 plt.imshow(np.clip(raster, 0, 1), interpolation="none")
 
+# %%
+# sense check: take a look at the areas corresponding to the highest value raster cells
+
+
+def plot_nth_largest_raster_cell(n):
+    # Flatten the array
+    flat_raster = raster.flatten()
+
+    # Get the indices that would sort the array in descending order
+    sorted_indices = np.argsort(flat_raster)[::-1]
+
+    # Get the index of the nth-largest value
+    nth_largest_index = sorted_indices[n - 1]
+
+    # Convert the flattened index to the corresponding indices in the original array
+    nth_largest_indices = np.unravel_index(nth_largest_index, raster.shape)
+
+    # Create a geometry representing the area of the nth-largest value cell
+    x_coord = xmin + nth_largest_indices[1] * cell_size
+    y_coord = ymax - nth_largest_indices[0] * cell_size
+    max_cell_geometry = box(x_coord, y_coord - cell_size, x_coord + cell_size, y_coord)
+
+    # Plot usrn_gdf clipped to this extent
+    f, ax = plt.subplots(figsize=figsize)
+    ax.set_xlim(x_coord, x_coord + cell_size)
+    ax.set_ylim(y_coord - cell_size, y_coord)
+    usrn_gdf_area = gpd.clip(usrn_gdf.compute(), mask=max_cell_geometry)
+    usrn_gdf_area.plot(ax=ax, alpha=0.5)
+    cx.add_basemap(ax, crs="EPSG:27700", source=cx.providers.OpenStreetMap.Mapnik)
+
+
+# %%
+plot_nth_largest_raster_cell(1)
+
+# %%
+plot_nth_largest_raster_cell(2)
+
+
+# %%
+plot_nth_largest_raster_cell(3)
+
+# %%
+plot_nth_largest_raster_cell(raster.size)
+
+# %% [markdown]
+# Seems about as expected on the whole, but surprising that so much of the top cell is unoccupied - may be worth exploring further
+
 # %% [markdown]
 # ## Point-snapping approach
 
 # %% [markdown]
-# Restrict the geometries to a bounded area, both to make computation manageable and due to some geometries causing errors (the area corresponds to a section of the east coast between Great Yarmouth and Lowestoft):
+# Restrict the geometries to a bounded area to make computation manageable (specific area chosen is a section of the east coast between Great Yarmouth and Lowestoft):
 
 # %%
 frame = (628160, 290000, 660000, 310000)
-# xmin value chosen to avoid IllegalArgumentException - in the real thing this would need fixing
 
 # %%
 usrn = gpd.read_file(usrn_path, bbox=frame)
@@ -615,13 +647,13 @@ ax.set_title(
 #
 # * Are streets the right unit? If two streets are connected to form a straight line, should they be considered as one? Note that in the above method street segments are only subsets of one street
 #
-# * Fix issue with IllegalArgumentException breaking full USRN dataset import
-#
 # * Scaling the method to all of the UK
 #
 # * Identifying suitable parameters for suitable length, density, average distance to UPRN - and radius of buffer circles (can we work with Kensa to find an approximate cost function?)
 #
 # * Used `explode` above to break MultiLineStrings into individual LineStrings assuming these are connected components - but not sure this is true (e.g. for cycles)
+#
+# * How does property density vary along the average street? If it's fairly constant then we don't really need to worry about street segments
 
 # %% [markdown]
 # ### Point-snapping approach applied to all GB
@@ -657,7 +689,8 @@ uprn_gdf = dask_geopandas.from_dask_dataframe(
 # `sjoin_nearest` isn't implemented in dask_geopandas and takes ages. Instead we could use the linked UPRN-USRN dataset to get nearest points on the USRN that each UPRN is linked to. In fact this may be more accurate than the original method - the closest USRN to each UPRN isn't necessarily the most sensible one to connect to, whereas the linked USRN may be more reliable and unlikely to be too far away.
 
 # %%
-joined = uprn_gdf.merge(
+uprn_gdf = uprn_gdf.set_crs("EPSG:27700")
+joined_full = uprn_gdf.merge(
     usrn_gdf,
     how="inner",
     left_on="IDENTIFIER_2",
@@ -667,70 +700,139 @@ joined = uprn_gdf.merge(
 
 # %%
 # tidy up
-joined = joined.drop(
+joined_full = joined_full.drop(
     columns=["X_COORDINATE", "Y_COORDINATE", "IDENTIFIER_1", "IDENTIFIER_2"]
 )
 
 # %%
-joined = joined.set_geometry("geometry_usrn")
-joined["length"] = joined["geometry_usrn"].length
+joined_full = joined_full.set_geometry("geometry_usrn")
+joined_full["length"] = joined_full["geometry_usrn"].length
 
 # %%
-joined["uprn_count"] = joined.groupby("usrn")["UPRN"].transform("count")
-joined["uprn_density"] = joined["uprn_count"] / joined["length"]
+joined_full["uprn_count"] = joined_full.groupby("usrn")["UPRN"].transform("count")
+joined_full["uprn_density"] = joined_full["uprn_count"] / joined_full["length"]
 
 # %%
-joined["nearest_point"] = joined.apply(
+joined_full["nearest_point"] = joined_full.apply(
     lambda x: nearest_points(x["geometry_uprn"], x["geometry_usrn"])[1], axis=1
 )
 
 # %%
-joined["buffer"] = joined.set_geometry("nearest_point").buffer(50)
-joined["segment"] = joined["buffer"].intersection(joined["geometry_usrn"])
-
-# %%
-intersections = joined.groupby("usrn").apply(
-    lambda x: line_merge(unary_union(x["segment"]))
+joined_full["total_uprn_to_usrn_distance"] = joined_full["geometry_uprn"].distance(
+    joined_full["geometry_usrn"], align=False
 )
 
-intersections = intersections.reset_index().rename(columns={0: "geometry"})
-
 # %%
-exploded = intersections.set_geometry("geometry").explode()
-
-exploded = exploded.set_crs("EPSG:27700")
-
-# %%
-# exploded.head()
+# joined_full.head()
 
 # %% [markdown]
-# Unfortunately this takes a long time as well. There is also another `sjoin_nearest` in the step where we link UPRNs to their nearest USRN segments, which is also likely to be slow. Potentially the rasterisation approach could be used to narrow down areas, then this method could be used to get a more detailed picture of a particular area.
+# At this point in the method applied to the small area above we identified buffer circles around each snapped point and merged them to get street segments. This takes too long on the full dataset, so instead we simplify by just aggregating this joined dataset by USRN to get street-level features.
 
 # %%
-# segment_counts = (
-#     joined[["nearest_point", "distance"]]
-#     .set_geometry("nearest_point")
-#     .sjoin_nearest(exploded)
+usrn_agg = joined_full.groupby(["usrn"]).agg(
+    {
+        "total_uprn_to_usrn_distance": "sum",
+        "length": "first",
+        "uprn_count": "first",
+        "uprn_density": "first",
+        "geometry_usrn": "first",
+    }
+)
+
+# %%
+usrn_agg_computed = usrn_agg.compute()
+
+# %%
+usrn_agg_computed["average_uprn_to_usrn_distance"] = (
+    usrn_agg_computed["total_uprn_to_usrn_distance"] / usrn_agg_computed["uprn_count"]
+)
+
+# %% [markdown]
+# This takes about an hour to compute on my machine. This is now a dataset of USRNs with the following measures that could be used to assess their suitability:
+# - Number of linked properties
+# - Length of street
+# - Density of linked properties along street
+# - Average distance between property and street
+#
+# If we can filter UPRNs to just eligible domestic properties, and filter USRNs to suitable streets, then these measures should correspond to some of the physical characteristics that are relevant to Kensa. As a general thought, potentially it would be best to use the rasterization approach to identify areas, then apply the more detailed point-snapping approach to these areas to get a more granular picture of the streets within them.
+
+# %%
+# questionably large max of 184,686
+usrn_agg_computed["average_uprn_to_usrn_distance"].describe()
+
+# %%
+# suspiciously all of these roads are on the England/Scotland border (from uprn.uk)
+
+usrn_agg_computed.loc[usrn_agg_computed["average_uprn_to_usrn_distance"] > 100000]
+
+# %%
+# as an example, get "top streets" according to arbitrary metrics
+
+top_streets = usrn_agg_computed.loc[
+    (usrn_agg_computed["average_uprn_to_usrn_distance"] < 100)
+    & (usrn_agg_computed["uprn_density"] > 10)
+    & (usrn_agg_computed["length"] > 100)
+]
+
+# %%
+top_streets
+
+# %%
+f, ax = plt.subplots(figsize=(15, 15))
+top_streets.set_geometry("geometry_usrn").plot(
+    ax=ax, color="red", linewidth=3, alpha=0.5
+)
+cx.add_basemap(
+    ax, crs="EPSG:27700", source=cx.providers.OpenStreetMap.Mapnik, alpha=0.5
+)
+
+# %% [markdown]
+# Both of the "top streets" happen to be in Manchester - both appear to be located near blocks of student accommodation, though also with lots of other non-domestic buildings around.
+
+# %% [markdown]
+# Thought: are USRN geometries accurate enough to give an accurate value for UPRN-USRN distance?
+
+# %%
+# code for applying the full point-snapping method to the whole of GB
+# not sure how long it takes as it's never finished
+
+# joined_full["buffer"] = joined_full.set_geometry("nearest_point").buffer(50)
+# joined_full["segment"] = joined_full["buffer"].intersection(joined_full["geometry_usrn"])
+
+# intersections_full = joined_full.groupby("usrn").apply(
+#     lambda x: line_merge(unary_union(x["segment"]))
 # )
 
-# exploded["uprn_count"] = segment_counts.groupby("index_right")["nearest_point"].count()
-# exploded["total_distance"] = segment_counts.groupby("index_right")["distance"].sum()
+# intersections_full = intersections_full.reset_index().rename(columns={0: "geometry"})
 
-# exploded["uprn_count"] = exploded["uprn_count"].fillna(0).astype(int)
-# exploded["total_distance"] = exploded["total_distance"].fillna(0)
+# exploded_full = intersections_full.set_geometry("geometry").explode()
 
-# exploded["average_distance"] = exploded["total_distance"] / exploded["uprn_count"]
+# exploded_full = exploded_full.set_crs("EPSG:27700")
 
-# exploded["length"] = exploded["geometry"].length
-# exploded["density"] = exploded["uprn_count"] / exploded["length"]
+# segment_counts = (
+#     joined_full[["nearest_point", "distance"]]
+#     .set_geometry("nearest_point")
+#     .sjoin_nearest(exploded_full)
+# )
+
+# exploded_full["uprn_count"] = segment_counts.groupby("index_right")["nearest_point"].count()
+# exploded_full["total_distance"] = segment_counts.groupby("index_right")["distance"].sum()
+
+# exploded_full["uprn_count"] = exploded_full["uprn_count"].fillna(0).astype(int)
+# exploded_full["total_distance"] = exploded_full["total_distance"].fillna(0)
+
+# exploded_full["average_distance"] = exploded_full["total_distance"] / exploded_full["uprn_count"]
+
+# exploded_full["length"] = exploded_full["geometry"].length
+# exploded_full["density"] = exploded_full["uprn_count"] / exploded_full["length"]
 
 # fig, ax = plt.subplots(figsize=(15, 15))
 
 # # arbitrary parameters for now
-# exploded.loc[
-#     (exploded["length"] > 100)
-#     & (exploded["density"] > 0.2)
-#     & (exploded["average_distance"] < 50)
+# exploded_full.loc[
+#     (exploded_full["length"] > 100)
+#     & (exploded_full["density"] > 0.2)
+#     & (exploded_full["average_distance"] < 50)
 # ].plot(ax=ax, color="red")
 # cx.add_basemap(
 #     ax, crs="EPSG:27700", source=cx.providers.OpenStreetMap.Mapnik, alpha=0.5
@@ -739,4 +841,28 @@ exploded = exploded.set_crs("EPSG:27700")
 #     "Street segments with 'sufficient' length, UPRN density and average distance to UPRN"
 # )
 
-# %%
+# %% [markdown]
+# ## Other useful datasets
+#
+# ### Open
+#
+# * Socio-economic - [admin-based income statistics by LSOA](https://www.ons.gov.uk/peoplepopulationandcommunity/personalandhouseholdfinances/incomeandwealth/articles/adminbasedincomestatisticsenglandandwales/taxyearending2018)
+#
+# * Pavements - [link on this page no longer works but could enquire](https://www.esriuk.com/en-gb/news/press-releases/uk/39-map-of-every-pavement-width-in-great-britain)
+#
+# * Overhead lines/cables - [National Grid network route map](https://www.nationalgrid.com/electricity-transmission/network-and-infrastructure/network-route-mapshttps://www.nationalgrid.com/electricity-transmission/network-and-infrastructure/network-route-maps)
+#
+# * Outdoor space - [MSOA level average garden size](https://www.ons.gov.uk/economy/environmentalaccounts/datasets/accesstogardensandpublicgreenspaceingreatbritain)
+#
+# * Road widths - could proxy from UPRN/USRN data, distance between adjacent UPRNs
+#
+# * Tenure - estimate proportions by small area from EPC
+#
+# * Floor area - as above
+#
+# ### Closed
+#
+# * Road widths - [OS Mastermap Highways?](https://beta.ordnancesurvey.co.uk/products/os-mastermap-highways-network-roads)
+
+# %% [markdown]
+#

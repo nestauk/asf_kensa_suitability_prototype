@@ -104,6 +104,9 @@ target/
 /inputs/*
 !/inputs/*.md
 /outputs/data/*
+/outputs/rasters/*
+/outputs/tables/*
+/outputs/vectors/*
 !/outputs/data/*.md
 /outputs/models/*
 !/outputs/models/*.md

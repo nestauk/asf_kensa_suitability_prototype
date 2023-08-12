@@ -1,3 +1,20 @@
+# ---
+# jupyter:
+#   jupytext:
+#     cell_metadata_filter: -all
+#     comment_magics: true
+#     custom_cell_magics: kql
+#     text_representation:
+#       extension: .py
+#       format_name: percent
+#       format_version: '1.3'
+#       jupytext_version: 1.14.6
+#   kernelspec:
+#     display_name: asf_kensa_suitability_prototype
+#     language: python
+#     name: asf_kensa_suitability_prototype
+# ---
+
 # %% [markdown]
 # ### Imports and setup
 
@@ -12,17 +29,26 @@ import dask_geopandas
 import geopandas as gpd
 from pyogrio import read_dataframe
 import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm, ListedColormap, BoundaryNorm
+from matplotlib_scalebar.scalebar import ScaleBar
+from matplotlib.patches import Patch
 from shapely.geometry import box
 from shapely.ops import nearest_points
 from shapely import unary_union, line_merge
 import contextily as cx
+import rasterio
 from rasterio.features import rasterize
-import numpy as np
+from rasterio.crs import CRS
+from rasterio.plot import show
+import numpy
+import pandas
 
 # %%
-uprn_path = "inputs/data/uprn/osopenuprn_202304.csv"
+# uprn_path = "inputs/data/uprn/osopenuprn_202304.csv"
 # Using an fsspec file uri allows you to keep the data zipped.
 # uprn_path = "zip://osopenuprn_202304.csv::inputs/data/uprn/osopenuprn_202305_csv.zip"
+# uprn filtered by buildings
+uprn_path = "inputs/data/uprn/osopenuprn_202304_osopenmaplocal_buildings.csv"
 
 # Using an fsspec
 # lids_path = "zip://BLPU_UPRN_Street_USRN_11.csv::inputs/data/lids/lids-2023-05_csv_BLPU-UPRN-Street-USRN-11.zip"
@@ -33,13 +59,15 @@ lids_path = "inputs/data/lids/BLPU_UPRN_Street_USRN_11.csv"
 usrn_path = "/vsizip/inputs/data/usrn/osopenusrn_202306_gpkg.zip/osopenusrn_202306.gpkg"
 
 # lsoa polygons from https://geoportal.statistics.gov.uk/maps/766da1380a3544c5a7ca9131dfd4acb6
-lsoa_path = "inputs/data/lsoa/LSOA_Dec_2021_Boundaries_Generalised_Clipped_EW_BGC_2022_3280346050083114707.gpkg"
+lsoa_path = "inputs/data/lsoa/LSOA_Dec_2021_Boundaries_Generalised_Clipped_EW_BGC_V2_-6143458911719931546.gpkg"
+# datazone polygons from
+datazone_path = "/vsizip/inputs/data/lsoa/SG_DataZoneBdry_2011.zip"
 
 # %% [markdown]
 # Import UPRNs:
 
 # %%
-# Load uprns from zip file
+# Load uprns
 uprn_df = dd.read_csv(uprn_path)
 
 # %%
@@ -79,17 +107,17 @@ uprn_df_check = uprn_df.merge(
 uprn_df_check.head()
 
 # %%
-# Get count of na values - 127,600
+# Get count of na values - 27,633
 uprn_df_check["IDENTIFIER_2"].isna().sum().compute()
 
 # %%
-# 127,600/ 41,123,153 = 0.31% missing
+# 27,633/ 34,927,544 = 0.08% missing
 uprn_df_check["IDENTIFIER_2"].__len__()
 
 # %%
 missing = uprn_df_check.loc[lambda df: df["IDENTIFIER_2"].isna()].compute()
 
-# Missing ids appear to be widely distributed, so I'll ignore them for now.
+# Missing ids appear to be distributed to urban areas, I'll ignore them for now, but worth exploring.
 f, ax = plt.subplots(figsize=(5, 7))
 missing.plot(x="X_COORDINATE", y="Y_COORDINATE", kind="scatter", marker=".", s=2, ax=ax)
 ax.set_aspect("equal")
@@ -107,6 +135,9 @@ uprn_df = uprn_df.merge(
 )
 
 # %%
+uprn_df.__len__()
+
+# %%
 # Get count of UPRNs by USRNs
 uprn_count = (
     uprn_df.groupby("IDENTIFIER_2")["IDENTIFIER_1"]
@@ -116,7 +147,7 @@ uprn_count = (
 )
 
 # %%
-# on average streets have 30 uprns associated, but median is 13 indicating skew. Max is high.
+# on average streets have 36 uprns associated, but median is 19 indicating skew. Max is high.
 uprn_count["count"].describe()
 
 # %% [markdown]
@@ -172,6 +203,9 @@ usrn_gdf = dask_geopandas.from_geopandas(usrn_gdf, npartitions=10)
 usrn_gdf.head()
 
 # %%
+usrn_gdf.__len__()
+
+# %%
 # merge uprn_count with usrn_gdf:
 usrn_gdf_check = usrn_gdf.merge(
     uprn_count, how="outer", left_on="usrn", right_on="IDENTIFIER_2"
@@ -181,15 +215,18 @@ usrn_gdf_check = usrn_gdf.merge(
 usrn_gdf_check.head()
 
 # %%
-# 670 Missing usrns of 1712890 - 0.04%
+usrn_gdf_check.__len__()
+
+# %%
+# 142 Missing usrns of 1713000 - 0.01% - these are usrns in linked ids not in usrns.
 usrn_gdf_check.usrn.isna().sum().compute()
 
 # %%
-# missing data count of uprns sums to 9,411 of 40,995,553 - 0.02%
+# missing data count of uprns sums to 4014 uprns of 34,900,206 - 0.01%
 usrn_gdf_check.loc[lambda df: df.usrn.isna(), "count"].sum().compute()
 
 # %%
-# no matching uprns for 337,624 usrns
+# no matching uprns for 734,729 usrns - no uprn associated with 43% of usrns - plausible?
 usrn_gdf_check.IDENTIFIER_2.isna().sum().compute()
 
 # %%
@@ -199,8 +236,12 @@ usrn_gdf = usrn_gdf.merge(
 )
 
 # %%
-# 1,375,234 usrns with joined uprn data - but might want to check/deal with duplicates.
+# 978,129 usrns with joined uprn data.
 usrn_gdf.__len__()
+
+# %%
+# No duplicate usrns by id.
+usrn_gdf["usrn"].unique().__len__()
 
 # %% [markdown]
 # This is now an authoritative uprn - usrn joined dataset based on the the published linked identifiers data. It is a good starting point for simple analysis.
@@ -214,9 +255,19 @@ usrn_gdf.__len__()
 # As would creating a line density surface. You could do this using `rasterio` and iterating over each line feature, rasterising, adjusting the burnt in values according to the count/density of the uprns on the line and the number of cells covered, and then summing all the surfaces (in practice this would be more like a reduce operation). Then you could look at the raw surface, or smooth/convolve.
 
 # %%
-# note that we still have duplicate geometries
+# note that we still have duplicate geometries - ignore for now.
 usrn_gdf.drop_duplicates("geometry").__len__()
 
+#
+# NB duplicates doesn't match on geometry, just construction, which may mean some are missed.
+#
+# from shapely.geometry import LineString
+# linestring_a = LineString([(0, 1), (2, 3), (2, 6), (2, 7)])
+# linestring_b = LineString([(0, 1), (2, 3), (2, 6), (2, 7)]) # These are duplicates.
+#
+# linestring_a = LineString([(0, 1), (2, 3), (2, 6), (2, 7)])
+# linestring_b = LineString([(0, 1), (2, 3), (2, 7)]) # These are not duplicates, but they cover the same coordinates.
+#
 # relevant info from uprn.uk:
 #
 # Note: a USRN is an operational identifier and is unique to a highway authority.
@@ -232,10 +283,363 @@ usrn_gdf.drop_duplicates("geometry").__len__()
 
 # %%
 # add column indicating density of UPRNs on USRNs
-usrn_gdf["density"] = usrn_gdf["count"] / usrn_gdf["geometry"].length
+# NB Calculating density per km for more convenient numbers
+usrn_gdf["density"] = usrn_gdf["count"] / (usrn_gdf["geometry"].length / 1_000)
 
 # %%
+# On average 167 uprns per km, so around 1 uprn every 6m
 usrn_gdf["density"].describe().compute()
+
+# %%
+density = usrn_gdf["density"].compute()
+
+# %%
+density_percentiles = density.quantile([i / 500 for i in list(range(0, 500))])
+
+# %%
+# A small proportion of the data is very dense.
+f, ax = plt.subplots(figsize=(6, 4))
+
+ax.plot([i / 500 for i in list(range(0, 500))], density_percentiles)
+
+ax.set_xlabel("Percentile of Distribution")
+ax.set_ylabel("UPRNs per km")
+ax.set_xticks(numpy.arange(0, 1.1, 0.1))
+ax.grid()
+
+# %%
+# Around 20% of people live in rural areas, this may help explain the shape of the curve.
+f, ax = plt.subplots(figsize=(6, 4))
+
+ax.plot(
+    [i / 500 for i in list(range(0, 500))][1:],
+    numpy.log(density_percentiles.to_list()[1:]),
+)
+
+# ax.plot([0,1],[0,numpy.log(density_percentiles.to_list()[1:]).max()])
+
+# Turning points from below.
+ax.axvline(0.93, ymin=0.01, ymax=0.74, linestyle="dashed")  # 7% high dense
+ax.axvline(
+    0.23, ymin=0.01, ymax=0.48, linestyle="dashed"
+)  # 70% middle dense, 23% low dense
+
+ax.axhline(3.91638117183093, xmin=0, xmax=0.25, linestyle="dashed")
+ax.axhline(5.947321067960089, xmin=0, xmax=0.895, linestyle="dashed")
+
+ax.set_xticks(numpy.arange(0, 1.1, 0.1))
+ax.set_ylim([0, 8.1])
+ax.grid()
+ax.set_xlabel("Percentile of Distribution")
+ax.set_ylabel("log UPRNs per km")
+# ax.set_title("Turning points in density curve");
+
+# %%
+numpy.exp([3.91638117183093, 5.947321067960089])
+
+
+# %%
+def turning_points(array):
+    """turning_points(array) -> min_indices, max_indices
+    Finds the turning points within an 1D array and returns the indices of the minimum and
+    maximum turning points in two separate lists.
+    """
+    idx_max, idx_min = [], []
+    if len(array) < 3:
+        return idx_min, idx_max
+
+    NEUTRAL, RISING, FALLING = range(3)
+
+    def get_state(a, b):
+        if a < b:
+            return RISING
+        if a > b:
+            return FALLING
+        return NEUTRAL
+
+    ps = get_state(array[0], array[1])
+    begin = 1
+    for i in range(2, len(array)):
+        s = get_state(array[i - 1], array[i])
+        if s != NEUTRAL:
+            if ps != NEUTRAL and ps != s:
+                if s == FALLING:
+                    idx_max.append((begin + i - 1) // 2)
+                else:
+                    idx_min.append((begin + i - 1) // 2)
+            begin = i
+            ps = s
+    return idx_min, idx_max
+
+
+# %%
+turning_points(
+    numpy.log(density_percentiles[0.01:].to_list())
+    - (numpy.log(density_percentiles.to_list()[1:]).max() * numpy.arange(0.01, 1, 0.01))
+)
+
+# %%
+# Percentile turning points
+numpy.arange(0.01, 1, 0.01)[[22, 92]]
+
+# %%
+# Assign density classification to usrns
+usrn_gdf = usrn_gdf.assign(
+    classification=lambda df: df["density"].apply(
+        lambda x: 1
+        if numpy.log(x) <= 3.91638117183093
+        else (2 if numpy.log(x) <= 5.947321067960089 else 3)
+    )
+)
+
+# %%
+usrn_gdf.classification.value_counts().compute()
+
+# %%
+# Save out usrn_gdf
+usrn_gdf.to_parquet("./outputs/vectors/gb_usrn_lids_density.parquet")
+
+# %% [markdown]
+# ## Map Classes
+
+# %%
+from affine import Affine
+from rasterio.enums import MergeAlg
+
+# Declare processing extent (bounds in British National Grid)
+xmin = 5000
+xmax = 666000
+ymin = 6000
+ymax = 1221000
+
+# Affine transformation for surface in British national grid, with 500m cell size.
+cell_size = 100
+transform = Affine(cell_size, 0, xmin, 0, -cell_size, ymax)
+
+out_shape = (int((ymax - ymin) / cell_size), int((xmax - xmin) / cell_size))
+
+rasters = [numpy.zeros(out_shape, dtype="uint8")]
+for classification in [1, 2, 3]:
+    usrn_gdf = gpd.read_parquet(
+        "./outputs/vectors/gb_usrn_lids_density.parquet",
+        filters=[["classification", "==", classification]],
+    )
+    shapes = [
+        (geom, dens)
+        for geom, dens in zip(
+            usrn_gdf["geometry"], numpy.ones(len(usrn_gdf), dtype="uint8")
+        )
+    ]
+    rasters.append(
+        rasterize(
+            shapes=shapes,
+            out_shape=out_shape,
+            transform=transform,
+            merge_alg=MergeAlg.add,
+            dtype="uint8",
+        )
+    )
+    print(classification)
+del usrn_gdf, shapes
+
+# %%
+rasters = numpy.dstack(rasters)
+
+# %%
+majority_raster = numpy.argmax(rasters, axis=2)
+
+# %%
+del rasters
+
+# %%
+cmap = ListedColormap(["none", "#66c2a5", "#8da0cb", "#fc8d62"])
+norm = BoundaryNorm([-0.5, 0.5, 1.5, 2.5, 3.5], cmap.N)
+
+# plot with 1 pixel = 1 cell on 96 dpi screen
+dpi = (96, 96)
+figsize = (majority_raster.shape[0] / dpi[0], majority_raster.shape[1] / dpi[1])
+
+# %%
+f, ax = plt.subplots(figsize=figsize)
+
+show(
+    majority_raster,
+    transform=transform,
+    norm=norm,
+    cmap=cmap,
+    interpolation="none",
+    ax=ax,
+)
+
+# Legend
+handles = [Patch(color="#fc8d62"), Patch(color="#8da0cb"), Patch(color="#66c2a5")]
+labels = ["> 383", "50 - 383", "< 50"]
+
+ax.legend(
+    handles, labels, title="Linear Density\nUPRNs/km", fontsize=18, title_fontsize=22
+)
+
+# Decoration
+ax.add_artist(
+    ScaleBar(1, width_fraction=0.0067, location=4, font_properties={"size": 18})
+)
+
+x, y, arrow_length = 0.05, 0.98, 0.025
+ax.annotate(
+    "N",
+    xy=(x, y),
+    xytext=(x, y - arrow_length),
+    arrowprops=dict(facecolor="black", width=5, headwidth=15),
+    ha="center",
+    va="center",
+    fontsize=28,
+    xycoords=ax.transAxes,
+)
+
+ax.set_axis_off()
+
+# %%
+london = gpd.read_file(
+    "https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/Regions_December_2022_EN_BFC/FeatureServer/0/query?where=RGN22NM%20%3D%20'LONDON'&outFields=*&outSR=27700&f=json"
+)
+
+# %%
+f, ax = plt.subplots(figsize=(8, 6))
+
+minx, miny, maxx, maxy = london.total_bounds
+
+show(
+    majority_raster,
+    transform=transform,
+    norm=norm,
+    cmap=cmap,
+    interpolation="none",
+    ax=ax,
+)
+london.plot(facecolor="none", edgecolor="k", linewidth=0.8, ax=ax)
+
+ax.set_xlim([minx - 500, maxx + 500])
+ax.set_ylim([miny - 500, maxy + 500])
+ax.set_xticks([])
+ax.set_yticks([])
+
+x, y, arrow_length = 0.05, 0.97, 0.12
+ax.annotate(
+    "N",
+    xy=(x, y),
+    xytext=(x, y - arrow_length),
+    arrowprops=dict(facecolor="black", width=5, headwidth=15),
+    ha="center",
+    va="center",
+    fontsize=22,
+    xycoords=ax.transAxes,
+)
+
+ax.add_artist(
+    ScaleBar(1, width_fraction=0.01, location=4, font_properties={"size": 12})
+)
+
+ax.set_title("Greater London")
+
+# %%
+west_midlands = gpd.read_file(
+    "https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/Combined_Authorities_December_2022_EN_BFC/FeatureServer/0/query?where=CAUTH22NM%20%3D%20'WEST%20MIDLANDS'&outFields=*&outSR=27700&f=json"
+)
+
+# %%
+f, ax = plt.subplots(figsize=(8, 6))
+
+minx, miny, maxx, maxy = west_midlands.total_bounds
+
+show(
+    majority_raster,
+    transform=transform,
+    norm=norm,
+    cmap=cmap,
+    interpolation="none",
+    ax=ax,
+)
+west_midlands.plot(facecolor="none", edgecolor="k", linewidth=0.8, ax=ax)
+
+ax.set_xlim([minx - 500, maxx + 500])
+ax.set_ylim([miny - 500, maxy + 500])
+ax.set_xticks([])
+ax.set_yticks([])
+
+x, y, arrow_length = 0.95, 0.97, 0.12
+ax.annotate(
+    "N",
+    xy=(x, y),
+    xytext=(x, y - arrow_length),
+    arrowprops=dict(facecolor="black", width=5, headwidth=15),
+    ha="center",
+    va="center",
+    fontsize=22,
+    xycoords=ax.transAxes,
+)
+
+ax.add_artist(
+    ScaleBar(1, width_fraction=0.01, location=3, font_properties={"size": 12})
+)
+
+ax.set_title("West Midlands Combined Authority: Birmingham and Coventry")
+
+# Legend
+handles = [Patch(color="#fc8d62"), Patch(color="#8da0cb"), Patch(color="#66c2a5")]
+labels = ["> 383", "50 - 383", "< 50"]
+
+ax.legend(
+    handles,
+    labels,
+    title="Linear Density\nUPRNs/km",
+    fontsize=14,
+    title_fontsize=16,
+    bbox_to_anchor=(0.98, 0.8),
+)
+
+
+# %%
+manchester = gpd.read_file(
+    "https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/Combined_Authorities_December_2022_EN_BFC/FeatureServer/0/query?where=CAUTH22NM%20%3D%20'GREATER%20MANCHESTER'&outFields=*&outSR=27700&f=json"
+)
+
+# %%
+f, ax = plt.subplots(figsize=(8, 6))
+
+minx, miny, maxx, maxy = manchester.total_bounds
+
+show(
+    majority_raster,
+    transform=transform,
+    norm=norm,
+    cmap=cmap,
+    interpolation="none",
+    ax=ax,
+)
+manchester.plot(facecolor="none", edgecolor="k", linewidth=0.8, ax=ax)
+
+ax.set_xlim([minx - 500, maxx + 500])
+ax.set_ylim([miny - 500, maxy + 500])
+ax.set_xticks([])
+ax.set_yticks([])
+
+x, y, arrow_length = 0.95, 0.97, 0.12
+ax.annotate(
+    "N",
+    xy=(x, y),
+    xytext=(x, y - arrow_length),
+    arrowprops=dict(facecolor="black", width=5, headwidth=15),
+    ha="center",
+    va="center",
+    fontsize=22,
+    xycoords=ax.transAxes,
+)
+
+ax.add_artist(
+    ScaleBar(1, width_fraction=0.01, location=3, font_properties={"size": 12})
+)
+
+ax.set_title("Greater Manchester")
 
 # %% [markdown]
 # ### Summaries by LSOA
@@ -243,6 +647,20 @@ usrn_gdf["density"].describe().compute()
 # %%
 # read LSOA data
 lsoa = read_dataframe(lsoa_path)
+datazone = read_dataframe(datazone_path)
+
+# %%
+# Combine lsoas and datazones
+lsoa = pandas.concat(
+    [
+        lsoa[["LSOA21CD", "LSOA21NM", "geometry"]],
+        datazone[["DataZone", "Name", "geometry"]].rename(
+            columns={"DataZone": "LSOA21CD", "Name": "LSOA21NM"}
+        ),
+    ],
+    ignore_index=True,
+)
+del datazone
 
 # %%
 lsoa_gdf = dask_geopandas.from_geopandas(lsoa, npartitions=10)
@@ -251,35 +669,53 @@ lsoa_gdf = dask_geopandas.from_geopandas(lsoa, npartitions=10)
 # overlay usrn_gdf with lsoa_gdf so that each row of clipped_gdf
 # corresponds to a segment of a USRN contained within an LSOA
 lsoa_gdf["lsoa_geometry"] = lsoa_gdf.geometry
-overlaid_gdf = usrn_gdf.compute().overlay(lsoa_gdf.compute(), how="intersection")
+overlaid_gdf = usrn_gdf.compute().overlay(
+    lsoa_gdf.compute(), how="intersection", keep_geom_type=True
+)
 
 # %%
 overlaid_gdf = dask_geopandas.from_geopandas(overlaid_gdf, npartitions=10)
 
 # %%
-# for each LSOA, calculate average street density by dividing total clipped USRN "weight" (density * clipped length)
+# for each LSOA, calculate average street density by dividing total clipped USRN estimate of UPRNs (density * clipped length)
 # by total length of clipped USRNs
-overlaid_gdf["clipped_usrn_length"] = overlaid_gdf["geometry"].length
-overlaid_gdf["clipped_usrn_weight"] = (
-    overlaid_gdf["clipped_usrn_length"] * overlaid_gdf["density"]
+# NB this assumes that UPRNS are uniformly distributed along USRNs
+overlaid_gdf["clipped_usrn_length_km"] = overlaid_gdf["geometry"].length / 1000
+
+overlaid_gdf["clipped_usrn_uprn_estimate"] = (
+    overlaid_gdf["clipped_usrn_length_km"] * overlaid_gdf["density"]
 )
 
 # %%
+# Group by lsoas and derive lsoa totals for uprn count estimates and length of usrns.
 lsoa_summaries = overlaid_gdf.groupby("LSOA21NM")[
-    ["clipped_usrn_length", "clipped_usrn_weight"]
+    ["clipped_usrn_length_km", "clipped_usrn_uprn_estimate"]
 ].agg("sum")
+
+# Calculate LSOA-level density
 lsoa_summaries["average_street_density"] = (
-    lsoa_summaries["clipped_usrn_weight"] / lsoa_summaries["clipped_usrn_length"]
+    lsoa_summaries["clipped_usrn_uprn_estimate"]
+    / lsoa_summaries["clipped_usrn_length_km"]
 )
 
 # %%
 lsoa_summaries.sort_values("average_street_density").compute()
 
-# %% [markdown]
-# The LSOA with lowest density is Cardiff 048F (W01001947) which is an industrial section of Cardiff Bay; other LSOAs in the top 5 are large and rural. The LSOA with highest density is Salford 036B (E01033994) which contains a large block of flats. (Interactive map of LSOAs [here](https://geoportal.statistics.gov.uk/datasets/766da1380a3544c5a7ca9131dfd4acb6))
+# %%
+# Reset index so that lsoa is a column
+lsoa_summaries = lsoa_summaries.reset_index()
+
+# %%
+# Save out to file
+lsoa_summaries.compute().to_csv(
+    "./inputs/data/lsoa/uprn_street_density_lsoa_2021.csv", index=False
+)
 
 # %% [markdown]
 # ### Rasterisation
+
+# %%
+usrn_gdf = gpd.read_parquet("./outputs/vectors/gb_usrn_lids_density.parquet")
 
 # %%
 from affine import Affine
@@ -291,15 +727,31 @@ ymin = 6000
 ymax = 1221000
 
 # Affine transformation for surface in British national grid, with 500m cell size.
-cell_size = 500
+cell_size = 250
 transform = Affine(cell_size, 0, xmin, 0, -cell_size, ymax)
 
 out_shape = (int((ymax - ymin) / cell_size), int((xmax - xmin) / cell_size))
 
+# shapes = [(geom, dens) for geom, dens in zip(usrn_gdf["geometry"], usrn_gdf["classification"])]
 shapes = [(geom, dens) for geom, dens in zip(usrn_gdf["geometry"], usrn_gdf["density"])]
 
 # %%
 raster = rasterize(shapes=shapes, out_shape=out_shape, transform=transform)
+
+# %%
+# Save raster out
+with rasterio.open(
+    "./outputs/rasters/usrn_simple_density_250m.tif",
+    "w",
+    driver="GTiff",
+    height=raster.shape[0],
+    width=raster.shape[1],
+    count=1,
+    dtype=raster.dtype,
+    crs=CRS.from_epsg(27700),
+    transform=transform,
+) as dst:
+    dst.write(raster, 1)
 
 # %%
 # plot with 1 pixel = 1 cell on 96 dpi screen
@@ -312,23 +764,41 @@ plt.figure(figsize=figsize)
 plt.imshow((raster != 0), interpolation="none")
 
 # %%
+cmap = ListedColormap(["none", "red", "green", "orange"])
+norm = BoundaryNorm([-0.5, 0.5, 1.5, 2.5, 3.5], cmap.N)
+
+# %%
+# plot nonzero cells
+plt.figure(figsize=figsize)
+plt.imshow(raster, cmap=cmap, norm=norm, interpolation="none")
+
+# %%
 # cell density values are long-tailed
-print((raster > 0.5).sum())
-print((raster > 1).sum())
-print((raster > 2).sum())
-print((raster > 4).sum())
-print((raster > 8).sum())
+print((raster > 1.5).sum())
+print((raster > 3.5).sum())
+print((raster > 9).sum())
+print((raster > 40).sum())
+print((raster > 140).sum())
+print((raster > 425).sum())
+print((raster > 1640).sum())
+print((raster > 7000).sum())
 
 # %%
-# scale by taking log of (raster + 1)
-# not the easiest to see
-plt.figure(figsize=figsize)
-plt.imshow(np.log(raster + 1), interpolation="none")
+cell_percentiles = numpy.quantile(raster[raster > 0], numpy.arange(0, 1, 0.01))
 
 # %%
-# better: clip to [0, 1]
-plt.figure(figsize=figsize)
-plt.imshow(np.clip(raster, 0, 1), interpolation="none")
+f, [ax1, ax2] = plt.subplots(1, 2, figsize=(12, 4))
+
+ax1.plot(numpy.arange(0, 1, 0.01), cell_percentiles)
+
+ax2.plot(numpy.arange(0, 1, 0.01), numpy.log(cell_percentiles))
+
+# %%
+f, ax = plt.subplots(figsize=figsize)
+
+norm = LogNorm(vmin=raster[raster > 0].min(), vmax=raster.max())
+
+ax.imshow(raster, norm=norm, cmap="coolwarm", interpolation="none")
 
 # %%
 # sense check: take a look at the areas corresponding to the highest value raster cells
@@ -339,13 +809,13 @@ def plot_nth_largest_raster_cell(n):
     flat_raster = raster.flatten()
 
     # Get the indices that would sort the array in descending order
-    sorted_indices = np.argsort(flat_raster)[::-1]
+    sorted_indices = numpy.argsort(flat_raster)[::-1]
 
     # Get the index of the nth-largest value
     nth_largest_index = sorted_indices[n - 1]
 
     # Convert the flattened index to the corresponding indices in the original array
-    nth_largest_indices = np.unravel_index(nth_largest_index, raster.shape)
+    nth_largest_indices = numpy.unravel_index(nth_largest_index, raster.shape)
 
     # Create a geometry representing the area of the nth-largest value cell
     x_coord = xmin + nth_largest_indices[1] * cell_size
@@ -372,7 +842,7 @@ plot_nth_largest_raster_cell(2)
 plot_nth_largest_raster_cell(3)
 
 # %%
-plot_nth_largest_raster_cell(raster.size)
+plot_nth_largest_raster_cell(raster[raster > 0].size)
 
 # %% [markdown]
 # Seems about as expected on the whole, but surprising that so much of the top cell is unoccupied - may be worth exploring further

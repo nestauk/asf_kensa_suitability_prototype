@@ -291,9 +291,17 @@ ax4.add_artist(legend2)
 
 ax4.text(0.01, 0.8, "Urban Form Class", fontsize=14)
 
+# %% [markdown]
+# ## Form Summaries
+
 # %%
 # usrn data
 usrn_gdf = geopandas.read_parquet("../../outputs/vectors/gb_usrn_lids_density.parquet")
+
+# %%
+# add column indicating density of UPRNs on USRNs
+# NB Calculating density per km for more convenient numbers
+usrn_gdf["density"] = usrn_gdf["count"] / (usrn_gdf["geometry"].length / 1_000)
 
 # %%
 # overlay usrn_gdf with form geodataframe so that each row of clipped_gdf
@@ -323,7 +331,7 @@ for part in [
         "../../inputs/data/urban_form/signatures_form_simplified.gpkg",
         where=f"signature_type == '{part}'",
     ).to_crs(27700)
-    # form["form_geometry"] = form.geometry#.to_wkt()
+    form["form_geometry"] = form.geometry  # .to_wkt()
     parts.append(usrn_gdf.overlay(form, how="intersection", keep_geom_type=True))
     print(part)
 
@@ -349,15 +357,65 @@ overlay["clipped_usrn_uprn_estimate"] = (
 )
 
 # %%
+recode_signatures = {
+    "1_0": "Suburban low density development",
+    "2_0": "Residential neighbourhoods",
+    "2_1": "Residential neighbourhoods",
+    "2_2": "Residential neighbourhoods",
+    "2_3": "Residential neighbourhoods",
+    "2_4": "Residential neighbourhoods",
+    "2_5": "Residential neighbourhoods",
+    "2_6": "Residential neighbourhoods",
+    "2_7": "Residential neighbourhoods",
+    "4_0": "Dense city centres",
+    "4_1": "Dense city centres",
+    "4_2": "Dense city centres",
+    "4_3": "Dense city centres",
+    "4_4": "Dense city centres",
+    "4_5": "Dense city centres",
+    "4_6": "Dense city centres",
+    "4_7": "Dense city centres",
+    "4_8": "Dense city centres",
+}
+
+overlay["signature_agg"] = overlay["signature_type"].map(recode_signatures)
+
+# %%
 # Group by lsoas and derive lsoa totals for uprn count estimates and length of usrns.
 form_summaries = overlay.groupby("signature_type")[
     ["clipped_usrn_length_km", "clipped_usrn_uprn_estimate"]
 ].agg("sum")
 
-# Calculate LSOA-level density
+# Calculate form-level density
 form_summaries["average_street_density"] = (
     form_summaries["clipped_usrn_uprn_estimate"]
     / form_summaries["clipped_usrn_length_km"]
 )
 
 # %%
+form_summaries
+
+# %%
+form_summaries["clipped_usrn_uprn_estimate"] / form_summaries[
+    "clipped_usrn_uprn_estimate"
+].sum() * 100
+
+# %%
+# Group by lsoas and derive lsoa totals for uprn count estimates and length of usrns.
+form_agg_summaries = overlay.groupby("signature_agg")[
+    ["clipped_usrn_length_km", "clipped_usrn_uprn_estimate"]
+].agg("sum")
+
+# Calculate form-level density
+form_agg_summaries["average_street_density"] = (
+    form_agg_summaries["clipped_usrn_uprn_estimate"]
+    / form_agg_summaries["clipped_usrn_length_km"]
+)
+
+# %%
+form_agg_summaries
+
+# %%
+form_agg_summaries["clipped_usrn_uprn_estimate"] / form_agg_summaries[
+    "clipped_usrn_uprn_estimate"
+].sum()

@@ -645,17 +645,25 @@ ax.set_title("Greater Manchester")
 # ### Summaries by LSOA
 
 # %%
-# read LSOA data
+# read LSOA data - 2021 lsoas
 lsoa = read_dataframe(lsoa_path)
+datazone = read_dataframe(datazone_path)
+
+# %%
+# read LSOA data - 2021 lsoas
+lsoa = read_dataframe(
+    "inputs/data/lsoa/LSOA_Dec_2011_Boundaries_Generalised_Clipped_BGC_EW_V3_-1005832519865330139.gpkg"
+)
 datazone = read_dataframe(datazone_path)
 
 # %%
 # Combine lsoas and datazones
 lsoa = pandas.concat(
     [
-        lsoa[["LSOA21CD", "LSOA21NM", "geometry"]],
+        lsoa[["LSOA11CD", "LSOA11NM", "geometry"]],
+        # lsoa[["LSOA21CD", "LSOA21NM", "geometry"]],
         datazone[["DataZone", "Name", "geometry"]].rename(
-            columns={"DataZone": "LSOA21CD", "Name": "LSOA21NM"}
+            columns={"DataZone": "LSOA11CD", "Name": "LSOA11NM"}
         ),
     ],
     ignore_index=True,
@@ -688,7 +696,7 @@ overlaid_gdf["clipped_usrn_uprn_estimate"] = (
 
 # %%
 # Group by lsoas and derive lsoa totals for uprn count estimates and length of usrns.
-lsoa_summaries = overlaid_gdf.groupby("LSOA21NM")[
+lsoa_summaries = overlaid_gdf.groupby("LSOA11NM")[
     ["clipped_usrn_length_km", "clipped_usrn_uprn_estimate"]
 ].agg("sum")
 
@@ -708,7 +716,7 @@ lsoa_summaries = lsoa_summaries.reset_index()
 # %%
 # Save out to file
 lsoa_summaries.compute().to_csv(
-    "./inputs/data/lsoa/uprn_street_density_lsoa_2021.csv", index=False
+    "./inputs/data/lsoa/uprn_street_density_lsoa_2011.csv", index=False
 )
 
 # %% [markdown]
